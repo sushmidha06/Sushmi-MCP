@@ -25,7 +25,7 @@ from .base import ProactiveAgent
 log = logging.getLogger("sushmi.agents.inbox")
 
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+CEREBRAS_URL = "https://api.cerebras.ai/v1/chat/completions"
 
 TRIAGE_SYSTEM = """You are an email-triage assistant for a freelance professional.
 Given a list of emails (subject + sender + first 400 chars of body), label each
@@ -45,13 +45,12 @@ Output JSON ONLY. No markdown fences, no preamble."""
 class InboxTriageAgent(ProactiveAgent):
     name = "inbox-triage"
 
-    # How many emails to triage per run. The Gemini call cost scales linearly
-    # so we cap at the most-recent 20 — enough to catch anything fresh.
+    # Cap at the most-recent 20 emails — enough to catch anything fresh.
     BATCH_SIZE = 20
 
     def _run(self) -> None:
-        if not settings.GEMINI_API_KEY:
-            self.add_finding("disabled", "Triage skipped", "GEMINI_API_KEY not set", severity="info")
+        if not settings.CEREBRAS_API_KEY:
+            self.add_finding("disabled", "Triage skipped", "CEREBRAS_API_KEY not set", severity="info")
             return
 
         emails = (self.node.get_email_bodies() or [])[: self.BATCH_SIZE]
@@ -97,10 +96,10 @@ class InboxTriageAgent(ProactiveAgent):
             })
         try:
             resp = httpx.post(
-                GEMINI_URL,
-                headers={"Authorization": f"Bearer {settings.GEMINI_API_KEY}"},
+                CEREBRAS_URL,
+                headers={"Authorization": f"Bearer {settings.CEREBRAS_API_KEY}"},
                 json={
-                    "model": settings.GEMINI_MODEL,
+                    "model": settings.CEREBRAS_MODEL,
                     "messages": [
                         {"role": "system", "content": TRIAGE_SYSTEM},
                         {"role": "user", "content": json.dumps({"emails": payload_emails})},
