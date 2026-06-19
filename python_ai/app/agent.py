@@ -227,16 +227,10 @@ class Orchestrator:
         for srv in self.servers:
             self.tools.extend(mcp_server_to_langchain_tools(srv))
 
-        # Gemini via its OpenAI-compatible endpoint. We deliberately avoid
-        # `langchain-google-genai`'s ChatGoogleGenerativeAI because its
-        # underlying `google-api-core` REST error parser crashes on certain
-        # 429 / not-found responses ('list' object has no attribute 'get'),
-        # which is unrecoverable from inside the agent loop. The OpenAI-style
-        # endpoint returns standard JSON errors that LangChain handles cleanly.
         self.llm = ChatOpenAI(
-            model=settings.GEMINI_MODEL,
-            api_key=settings.GEMINI_API_KEY,
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            model=settings.CEREBRAS_MODEL,
+            api_key=settings.CEREBRAS_API_KEY,
+            base_url="https://api.cerebras.ai/v1",
             temperature=0.2,
             timeout=45.0,
             max_retries=2,
@@ -315,8 +309,7 @@ class Orchestrator:
                 f"[User's original message]\n{message}"
             )
 
-        # Gemini free-tier sometimes 429s on burst. Retry a couple of times
-        # with modest backoff. Total ~19s — well under the 55s upstream cap.
+        # Retry on transient rate-limit errors.
         result = None
         delays = [4, 6, 9]
         exec_start = time.monotonic()

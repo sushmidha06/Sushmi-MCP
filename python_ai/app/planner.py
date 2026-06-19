@@ -72,9 +72,9 @@ class Planner:
             lines.append(f"- {t.name}: {first}")
         self.tools_summary = "\n".join(lines) or "(no tools)"
         self.llm = ChatOpenAI(
-            model=settings.GEMINI_MODEL,
-            api_key=settings.GEMINI_API_KEY,
-            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            model=settings.CEREBRAS_MODEL,
+            api_key=settings.CEREBRAS_API_KEY,
+            base_url="https://api.cerebras.ai/v1",
             temperature=0.0,
             timeout=20.0,
             max_retries=1,

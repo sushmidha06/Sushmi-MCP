@@ -11,14 +11,9 @@ class Settings:
     # Shared HS256 secret. Node signs service tokens, Python verifies.
     JWT_SHARED_SECRET: str = os.getenv("JWT_SHARED_SECRET", "")
 
-    # Gemini
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    # Hardcoded — earlier deployments had `gemini-2.0-flash` baked into Render's
-    # env vars, and that model is no longer available for newer Google AI Studio
-    # API keys. Pinning here so the app behaves identically regardless of host
-    # env. Set GEMINI_MODEL_OVERRIDE if you really need to change it at runtime.
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL_OVERRIDE", "gemini-2.5-flash")
-    GEMINI_EMBED_MODEL: str = os.getenv("GEMINI_EMBED_MODEL", "models/gemini-embedding-001")
+    # Cerebras (replaces Gemini for chat/completion)
+    CEREBRAS_API_KEY: str = os.getenv("CEREBRAS_API_KEY", "")
+    CEREBRAS_MODEL: str = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
 
     # RAG — Chroma Cloud (per-tenant collection inside this database).
     # Falls back to in-memory numpy cosine if Chroma keys are missing.

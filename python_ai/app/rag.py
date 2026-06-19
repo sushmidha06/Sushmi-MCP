@@ -1,18 +1,8 @@
 """Per-tenant RAG over the user's Firestore data.
 
-Production path: **Chroma Cloud** with one collection per tenant
-(`tenant_{userId}`). Vectors persist between requests and are isolated by
-collection — no cross-tenant leakage at the vector layer.
-
-Embedding: Gemini `gemini-embedding-001` via `langchain_google_genai`.
-Chunker: 600-char overlapping chunks (overlap 80) so long content (project
-notes, invoice lines, eventual email bodies) can match on partial matches.
-Metadata: every chunk carries `{source, source_id, title, client, chunk_idx}`
-so the agent (and we) can filter by source type or by project/client later.
-
-Fallback: if `CHROMA_API_KEY` isn't set, RagIndex transparently falls back
-to in-memory numpy cosine — same input, same output shape, just slower and
-non-persistent. Lets local dev work without a Chroma signup.
+Embedding: TF-IDF with feature hashing (no API key, pure numpy).
+Chunker: 600-char overlapping chunks (overlap 80).
+Backend: in-memory numpy cosine by default; Chroma Cloud if RAG_USE_CHROMA=1.
 """
 
 from __future__ import annotations
@@ -22,7 +12,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
 import numpy as np
 
 from .settings import settings
@@ -30,50 +19,51 @@ from .settings import settings
 log = logging.getLogger("sushmi.rag")
 
 
-class _RestGeminiEmbedder:
-    """Tiny Gemini embeddings client using the REST API (via httpx).
-    Bypasses langchain-google-genai's gRPC stack which breaks inside
-    FastAPI's AnyIO worker threads."""
+class _TfidfEmbedder:
+    """Lightweight TF-IDF embedder using the hashing trick.
+    No external API or API key needed — pure numpy + stdlib.
+    IDF weights are built from the document corpus on the first embed_documents call."""
 
-    def __init__(self, model: str, api_key: str):
-        # Strip 'models/' prefix; the REST URL adds it back.
-        self.model = model[len("models/"):] if model.startswith("models/") else model
-        self.api_key = api_key
-        self._url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:embedContent"
-        self._batch_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:batchEmbedContents"
-        self._client = httpx.Client(timeout=30.0)
+    DIM = 1024
 
-    def _one(self, text: str, task_type: str) -> list[float]:
-        r = self._client.post(
-            self._url,
-            params={"key": self.api_key},
-            json={"content": {"parts": [{"text": text}]}, "taskType": task_type},
-        )
-        r.raise_for_status()
-        return r.json()["embedding"]["values"]
+    def __init__(self):
+        self._idf: dict[str, float] = {}
+
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        import re
+        return re.findall(r'\b[a-z0-9]+\b', (text or "").lower())
+
+    def _hash_idx(self, token: str) -> int:
+        return int.from_bytes(token.encode()[:8].ljust(8, b'\x00'), 'little') % self.DIM
+
+    def _encode(self, tokens: list[str]) -> list[float]:
+        vec = [0.0] * self.DIM
+        counts: dict[str, int] = {}
+        for t in tokens:
+            counts[t] = counts.get(t, 0) + 1
+        total = max(len(tokens), 1)
+        for t, cnt in counts.items():
+            tf = cnt / total
+            weight = tf * self._idf.get(t, 1.0)
+            vec[self._hash_idx(t)] += weight
+        return vec
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        # Try batch first; fall back to per-text if the batch endpoint is fussy.
         if not texts:
             return []
-        try:
-            r = self._client.post(
-                self._batch_url,
-                params={"key": self.api_key},
-                json={
-                    "requests": [
-                        {"model": f"models/{self.model}", "content": {"parts": [{"text": t}]}, "taskType": "RETRIEVAL_DOCUMENT"}
-                        for t in texts
-                    ]
-                },
-            )
-            r.raise_for_status()
-            return [e["values"] for e in r.json().get("embeddings", [])]
-        except Exception:
-            return [self._one(t, "RETRIEVAL_DOCUMENT") for t in texts]
+        import math
+        tokenized = [self._tokenize(t) for t in texts]
+        N = len(tokenized)
+        df: dict[str, int] = {}
+        for toks in tokenized:
+            for t in set(toks):
+                df[t] = df.get(t, 0) + 1
+        self._idf = {t: math.log((N + 1) / (c + 1)) + 1.0 for t, c in df.items()}
+        return [self._encode(toks) for toks in tokenized]
 
     def embed_query(self, text: str) -> list[float]:
-        return self._one(text, "RETRIEVAL_QUERY")
+        return self._encode(self._tokenize(text))
 
 
 def _ensure_thread_loop():
@@ -209,7 +199,7 @@ class _ChromaBackend:
     """Chroma Cloud collection per tenant. Persistent. The collection name
     `tenant_{userId}` is the primary multi-tenant boundary at the vector layer."""
 
-    def __init__(self, user_id: str, embedder: _RestGeminiEmbedder):
+    def __init__(self, user_id: str, embedder: _TfidfEmbedder):
         import os
         os.environ.setdefault("CHROMA_TELEMETRY_IMPL", "noop")
         import chromadb
@@ -281,7 +271,7 @@ class _ChromaBackend:
 class _NumpyBackend:
     """In-memory cosine, used when Chroma keys aren't configured. Same shape as Chroma."""
 
-    def __init__(self, embedder: _RestGeminiEmbedder):
+    def __init__(self, embedder: _TfidfEmbedder):
         self.embedder = embedder
         self._docs: list[Doc] = []
         self._vectors: np.ndarray | None = None
@@ -332,18 +322,13 @@ class RagIndex:
     def __init__(self, user_id: str, docs: list[Doc]):
         self.user_id = user_id
         self.docs = docs
-        self._embedder: _RestGeminiEmbedder | None = None
+        self._embedder: _TfidfEmbedder | None = None
         self.backend = self._pick_backend()
         self._sync()
 
-    def _ensure_embedder(self) -> _RestGeminiEmbedder:
+    def _ensure_embedder(self) -> _TfidfEmbedder:
         if self._embedder is None:
-            if not settings.GEMINI_API_KEY:
-                raise RuntimeError("GEMINI_API_KEY not configured")
-            self._embedder = _RestGeminiEmbedder(
-                model=settings.GEMINI_EMBED_MODEL,
-                api_key=settings.GEMINI_API_KEY,
-            )
+            self._embedder = _TfidfEmbedder()
         return self._embedder
 
     def _pick_backend(self):
