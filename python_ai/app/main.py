@@ -130,8 +130,23 @@ def health() -> dict:
         "service": "sushmi-mcp-ai",
         "model": settings.CEREBRAS_MODEL,
         "configured": bool(settings.CEREBRAS_API_KEY) and bool(settings.JWT_SHARED_SECRET),
-        "build": "v12-cerebras-2026-06-19",
+        "build": "v13-debug-2026-06-19",
     }
+
+
+@app.get("/debug/cerebras")
+def debug_cerebras() -> dict:
+    """Test Cerebras reachability from this host — no auth needed."""
+    try:
+        r = httpx.post(
+            "https://api.cerebras.ai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {settings.CEREBRAS_API_KEY}", "Content-Type": "application/json"},
+            json={"model": settings.CEREBRAS_MODEL, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
+            timeout=15.0,
+        )
+        return {"reachable": True, "status": r.status_code, "response": r.json()}
+    except Exception as e:
+        return {"reachable": False, "error": type(e).__name__, "detail": str(e)}
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
