@@ -135,8 +135,8 @@ def health() -> dict:
 
 
 @app.get("/debug/cerebras")
-def debug_cerebras() -> dict:
-    """Test Cerebras reachability from this host — no auth needed."""
+def debug_cerebras(claims: dict = Depends(require_user)) -> dict:
+    """Test Cerebras reachability from this host. Requires valid service JWT."""
     try:
         r = httpx.post(
             "https://api.cerebras.ai/v1/chat/completions",
@@ -144,9 +144,12 @@ def debug_cerebras() -> dict:
             json={"model": settings.CEREBRAS_MODEL, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
             timeout=15.0,
         )
-        return {"reachable": True, "status": r.status_code, "response": r.json()}
+        reachable = r.status_code < 500
+        log.info("debug_cerebras status=%s", r.status_code)
+        return {"reachable": reachable, "status": r.status_code}
     except Exception as e:
-        return {"reachable": False, "error": type(e).__name__, "detail": str(e)}
+        log.error("debug_cerebras failed: %s: %s", type(e).__name__, e)
+        return {"reachable": False, "error": type(e).__name__}
 
 
 @app.get("/metrics", response_class=PlainTextResponse)
